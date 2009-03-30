@@ -1,0 +1,27 @@
+Setup:
+
+(1) You need Python 2.5 or later
+(2) To use SVM models, you'll need SVM Light (http://svmlight.joachims.org/)
+      - once installed, you'll need to modify sbd.py slightly:
+        at the top, change the paths to SVM_LEARN and SVM_CLASSIFY to point
+        to the files you've installed.
+
+-----
+
+Example calls (if python defaults to version 2.4, you'll need to specify
+               python2.5):
+
+(show command line options)
+python sbd.py -h
+
+(split sentences in sample.txt using the provided Naive Bayes model)
+python sbd.py -m model_nb sample.txt
+
+(now using the provided SVM model)
+python sbd.py -m model_svm sample.txt
+
+(now keeping tokenized output)
+python sbd.py -m model_nb -t sample.txt
+
+(now writing output to sample.sent)
+python sbd.py -m model_nb -t sample.txt -o sample.sent

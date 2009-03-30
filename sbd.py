@@ -1,0 +1,490 @@
+import re, sys, os, math, tempfile, collections
+import util, word_tokenize
+
+"""
+Utilities for disambiguating sentence boundaries
+Copyright Dan Gillick, 2009.
+
+TODO:
+- capitalized headlines screw things up?
+- deal with ?! maybe just assume these sentence boundaries always
+"""
+
+## globals
+SVM_LEARN = '/u/dgillick/svm_light/svm_learn'
+SVM_CLASSIFY = '/u/dgillick/svm_light/svm_classify'
+
+def unannotate(t):
+    """
+    get rid of a tokenized word's annotations
+    """
+    t = re.sub('(<A>)?(<E>)?(<S>)?$', '', t)
+    return t
+
+def clean(t):
+    """
+    normalize numbers, discard some punctuation that can be ambiguous
+    """
+    t = re.sub('[.,\d]*\d', '<NUM>', t)
+    t = re.sub('[^a-zA-Z0-9,.;:<>\-\'\/?!$% ]', '', t)
+    t = t.replace('--', ' ') # sometimes starts a sentence... trouble
+    return t
+            
+def get_features(frag, model):
+    """
+    ... w1. (sb?) w2 ...
+    Features, listed roughly in order of importance:
+
+    (1) w1: word that includes a period
+    (2) w2: the next word, if it exists
+    (3) w1length: number of alphabetic characters in w1
+    (4) w2cap: true if w2 is capitalized
+    (5) both: w1 and w2
+    (6) w1abbr: log count of w1 in training without a final period
+    (7) w2lower: log count of w2 in training as lowercased
+    (8) w1w2upper: w1 and w2 is capitalized
+    """
+    words1 = clean(frag.tokenized).split()
+    w1 = words1[-1]
+    if frag.next:
+        words2 = clean(frag.next.tokenized).split()
+        w2 = words2[0]
+    else:
+        words2 = []
+        w2 = ''
+
+    c1 = re.sub('(^.+?\-)', '', w1)
+    c2 = re.sub('(\-.+?)$', '', w2)
+
+    feats = {}
+    
+    feats['w1'] = c1
+    feats['w2'] = c2
+    feats['both'] = c1 + '_' + c2
+
+    len1 = min(10, len(re.sub('\W', '', c1)))
+    
+    if c1.replace('.','').isalpha():
+        feats['w1length'] = str(len1)
+        feats['w1abbr'] = str(int(math.log(1+model.non_abbrs[c1[:-1]])))
+
+    if c2.replace('.','').isalpha():
+        feats['w2cap'] = str(c2[0].isupper())
+        feats['w2lower'] = str(int(math.log(1+model.lower_words[c2.lower()])))
+        feats['w1w2upper'] = c1 + '_' + str(c2[0].isupper())
+
+    return feats
+
+def is_sbd_hyp(word):
+    """
+    todo: expand to ?!
+    """
+    
+    if not '.' in word: return False
+    c = unannotate(word)
+    if c.endswith('.'): return True
+    if re.match('.*\.["\')\]]*$', c): return True
+    return False
+        
+def get_data(files, expect_labels=True, tokenize=False):
+    """
+    load text from files, returning an instance of the Doc class
+    doc.frag is the first frag, and each points to the next
+    """
+    
+    if type(files) == type(''): files = [files]
+    frag_list = None
+    word_index = 0
+    frag_index = 0
+    curr_words = []
+    lower_words, non_abbrs = util.Counter(), util.Counter()
+
+    for file in files:
+        sys.stderr.write('reading [%s]\n' %file)
+        fh = open(file)
+        for line in fh:
+            if (not line.strip()) and (not curr_words) and frag_list:
+                frag.ends_seg = True
+            for word in line.split():
+                curr_words.append(word)
+
+                if is_sbd_hyp(word):
+                    frag = Frag(' '.join(curr_words))
+                    if not frag_list: frag_list = frag
+                    else: prev.next = frag
+                    
+                    ## get label; tokenize
+                    if expect_labels: frag.label = int('<S>' in word)
+                    if tokenize:
+                        tokens = word_tokenize.tokenize(frag.orig)
+                    else: tokens = frag.orig
+                    tokens = re.sub('(<A>)|(<E>)|(<S>)', '', tokens)
+                    frag.tokenized = tokens
+                    
+                    frag_index += 1
+                    prev = frag
+                    curr_words = []
+
+                word_index += 1
+        fh.close()
+    sys.stderr.write(' words [%d] sbd hyps [%d]\n' %(word_index, frag_index))
+
+    ## create a Doc object to hold all this information
+    doc = Doc(frag_list)
+    return doc
+
+
+class Model:
+    """
+    Abstract Model class holds all relevant information, and includes
+    train and classify functions
+    """
+    def __init__(self, doc, path):
+        self.lower_words, self.non_abbrs = doc.get_stats()
+        self.feats = None
+        self.path = path
+
+    def train(self, doc):
+        abstract
+
+    def classify(self, doc):
+        abstract
+        
+class NB_Model(Model):
+    """
+    Naive Bayes model, with a few tweaks:
+    - all feature types are pooled together for normalization (this might help
+      because the independence assumption is so broken for our features)
+    - smoothing: add 0.1 to all counts
+    - priors are modified for better performance (this is mysterious but works much better)
+    """
+
+    def train(self, doc):
+
+        sys.stderr.write('training nb... ')
+        feats = collections.defaultdict(util.Counter)
+        totals = util.Counter()
+
+        frag = doc.frag
+        while frag:
+            for feat, val in frag.features.items():
+                feats[frag.label][feat + '_' + val] += 1
+            totals[frag.label] += len(frag.features)
+            frag = frag.next
+
+        ## add-1 smoothing and normalization
+        sys.stderr.write('smoothing... ')
+        smooth_inc = 0.1
+        all_feat_names = set(feats[True].keys()).union(set(feats[False].keys()))
+        for label in [0,1]:
+            totals[label] += (len(all_feat_names) * smooth_inc)
+            for feat in all_feat_names:
+                feats[label][feat] += smooth_inc
+                feats[label][feat] /= totals[label]
+            feats[label]['<prior>'] = totals[label] / totals.totalCount()
+
+        sys.stderr.write('done!\n')
+        self.feats = feats
+
+    def classify_nb_one(self, frag):
+        ## the prior is weird, but it works better this way, consistently
+        probs = util.Counter([(label, self.feats[label]['<prior>']**4) for label in self.feats])
+        for label in probs:
+            for feat, val in frag.features.items():
+                key = feat + '_' + val
+                if not key in self.feats[label]: continue
+                probs[label] *= self.feats[label][key]
+
+        probs = util.normalize(probs)
+        return probs[1]
+
+    def classify(self, doc):
+        sys.stderr.write('NB classifying... ')
+        frag = doc.frag
+        while frag:
+            pred = self.classify_nb_one(frag)
+            frag.pred = pred
+            frag = frag.next
+        sys.stderr.write('done!\n')
+
+class SVM_Model(Model):
+    """
+    SVM model (using SVM Light), with a linear kernel, C parameter set to 1
+    Non-exhaustive testing of other kernels and parameters showed no improvement
+    """
+
+    def train(self, doc):
+        """
+        takes training data and a path and creates an svm model
+        """
+
+        model_file = '%ssvm_model' %self.path
+
+        ## need integer dictionary for features
+        sys.stderr.write('training. making feat dict... ')
+        feat_list = set()
+        frag = doc.frag
+        while frag:
+            feats = [f+'_'+v for f,v in frag.features.items()]
+            for feat in feats: feat_list.add(feat)
+            frag = frag.next
+        self.feats = dict(zip(feat_list, range(1,len(feat_list)+1)))
+
+        ## training data file
+        sys.stderr.write('writing... ')
+        lines = []
+        frag = doc.frag
+        while frag:
+            if frag.label == None: util.die('expecting labeled data')
+            elif frag.label > 0.5: svm_label = '+1'
+            elif frag.label < 0.5: svm_label = '-1'
+            else: continue
+            line = '%s ' %svm_label
+            feats = [f+'_'+v for f,v in frag.features.items()]
+            svm_feats = [self.feats[f] for f in feats]
+            svm_feats.sort(lambda x,y: x-y)
+            line += ' '.join(['%d:1' %x for x in svm_feats])
+            lines.append(line)
+            frag = frag.next
+
+        unused, train_file = tempfile.mkstemp()
+        fh = open(train_file, 'w')
+        fh.write('\n'.join(lines) + '\n')
+        fh.close()
+    
+        ## train an svm model
+        sys.stderr.write('running svm... ')
+        options = '-c 1 -v 0'
+        cmd = '%s %s %s %s' %(SVM_LEARN, options, train_file, model_file)
+        os.system(cmd)
+        sys.stderr.write('done!\n')
+
+        ## clean up
+        os.remove(train_file)
+
+    def classify(self, doc):
+
+        model_file = '%ssvm_model' %self.path
+        if not self.feats: util.die('Incomplete model')
+        if not os.path.isfile(model_file): util.die('no model [%s]' %model_file)
+
+        ## testing data file
+        sys.stderr.write('SVM classifying... ')
+        lines = []
+        frag = doc.frag
+        while frag:
+            if frag.label == None: svm_label = '0'
+            elif frag.label: svm_label = '+1'
+            else: svm_label = '-1'
+            line = '%s ' %svm_label
+            feats = [f+'_'+v for f,v in frag.features.items()]
+            svm_feats = [self.feats[f] for f in feats if f in self.feats]
+            svm_feats.sort(lambda x,y: x-y)
+            line += ' '.join(['%d:1' %x for x in svm_feats])
+            lines.append(line)
+            frag = frag.next
+
+        unused, test_file = tempfile.mkstemp()
+        fh = open(test_file, 'w')
+        fh.write('\n'.join(lines) + '\n')
+        fh.close()
+    
+        ## classify test data
+        unused, pred_file = tempfile.mkstemp()
+        options = '-v 0'
+        cmd = '%s %s %s %s %s' %(SVM_CLASSIFY, options, test_file, model_file, pred_file)
+        os.system(cmd)
+
+        ## get predictions
+        total = 0
+        preds = map(float, open(pred_file).read().splitlines())
+        frag = doc.frag
+        while frag:
+            frag.pred = util.logit(preds[total])
+            frag = frag.next
+            total += 1
+
+        ## clean up
+        os.remove(test_file)
+        os.remove(pred_file)
+        sys.stderr.write('done!\n')
+        
+class Doc:
+    """
+    A Document points to the head of a Frag object
+    """
+    
+    def __init__(self, frag):
+        self.frag = frag
+
+    def __str__(self):
+        s = []
+        curr = self.frag
+        while curr: s.append(curr)
+        return '\n'.join(s)
+
+    def get_stats(self):
+        sys.stderr.write('getting statistics... ')
+        lower_words = util.Counter()
+        non_abbrs = util.Counter()
+        
+        frag = self.frag
+        while frag:
+            for word in frag.tokenized.split():
+                if word.replace('.', '').isalpha():
+                    if word.islower(): lower_words[word.replace('.','')] += 1
+                    if not word.endswith('.'): non_abbrs[word] += 1
+            frag = frag.next
+
+        sys.stderr.write('lowercased [%d] non-abbrs [%d]\n'
+                         %(len(lower_words), len(non_abbrs)))
+
+        return lower_words, non_abbrs
+
+    def featurize(self, model):
+        sys.stderr.write('featurizing... ')
+        frag = self.frag
+        while frag:
+            frag.features = get_features(frag, model)
+            frag = frag.next
+        sys.stderr.write('done!\n')
+
+    def segment(self, use_preds=False, tokenize=False, output=None):
+        """
+        output all the text, split according to predictions or labels
+        """
+        thresh = 0.5
+        sent = []
+        frag = self.frag
+        while frag:
+            if tokenize: text = frag.tokenized
+            else: text = frag.orig
+            sent.append(text)
+            if frag.ends_seg or (use_preds and frag.pred>thresh) or (not use_preds and frag.label>thresh):
+                sent_text = ' '.join(sent) + '\n'
+                if not output: sys.stdout.write(sent_text)
+                else: output.write(sent_text)
+                sent = []
+            frag = frag.next
+
+    def show_results(self, verbose=False):
+
+        thresh = 0.5
+        total, correct = 0, 0
+        frag = self.frag
+        while frag:
+            total += 1
+            if frag.label == (frag.pred > thresh):
+                correct += 1
+            else:
+                w1 = ' '.join(frag.tokenized.split()[-2:])
+                if frag.next: w2 = ' '.join(frag.next.tokenized.split()[:2])
+                else: w2 = '<EOF>'
+                print '[%d] [%1.4f] %s?? %s' %(frag.label, frag.pred, w1, w2)
+
+            frag = frag.next
+
+        
+class Frag:
+    """
+    A fragment of text that ends with a possible sentence boundary
+    """
+    def __init__(self, orig):
+        self.orig = orig
+        self.next = None
+        self.ends_seg = False
+        self.tokenized = False
+        self.pred = None
+        self.label = None
+        self.features = None
+
+    def __str__(self):
+        s = self.orig
+        if self.ends_seg: s += ' <EOS> '
+        return s
+    
+def build_model(files, options):
+
+    ## create a Doc object from some labeled data
+    train_corpus = get_data(files, tokenize=options.tokenize)
+
+    ## create a new model
+    if options.svm: model = SVM_Model(train_corpus, options.model_path)
+    else: model = NB_Model(train_corpus, options.model_path)
+
+    ## featurize the training corpus
+    train_corpus.featurize(model)
+
+    ## run the model's training routine
+    model.train(train_corpus)
+
+    ## save the model
+    util.save_pickle(model, options.model_path + 'model.pkl')
+    return model
+
+def load_model(options):
+    sys.stderr.write('loading model from [%s]... ' %options.model_path)
+    model = util.load_pickle(options.model_path + 'model.pkl')
+    sys.stderr.write('done!\n')
+    return model
+
+
+if __name__ == '__main__':
+
+    ## labeled data
+    data_root = '/u/dgillick/workspace/sbd/'
+    brown_data = data_root + 'whiskey/brown.1'
+    wsj_data = data_root + 'whiskey/satz.1'
+    poe_data = data_root + 'whiskey/poe.1'
+    new_wsj_data = data_root + 'whiskey/wsj.1'
+
+    ## options
+    from optparse import OptionParser
+    usage = 'usage: %prog [options] <text_file>'
+    parser = OptionParser(usage=usage)
+    parser.add_option('-v', '--verbose', dest='verbose', default=False,
+                      action='store_true', help='verbose output')
+    parser.add_option('-t', '--tokenize', dest='tokenize', default=False,
+                      action='store_true', help='write tokenized output')
+    parser.add_option('-m', '--model', dest='model_path', type='str', default='model_nb',
+                      help='model path')
+    parser.add_option('-o', '--output', dest='output', type='str', default=None,
+                      help='write sentences to this file')
+    parser.add_option('-x', '--train', dest='train', type='str', default=None,
+                      help='train a new model using this labeled data file')
+    parser.add_option('-c', '--svm', dest='svm', default=False,
+                      action='store_true', help='use SVM instead of Naive Bayes for training')
+    (options, args) = parser.parse_args()
+
+    ## get test file
+    if len(args) > 0:
+        options.test = args[0]
+        if not os.path.isfile(options.test): util.die('path [%s] does not exist' %options.test)
+    else:
+        options.test = None
+        if not options.train: util.die('you did not specify either train or test!')
+
+    ## create model path
+    if not options.model_path.endswith('/'): options.model_path += '/'
+    if options.train:
+        if not os.path.isfile(options.train): util.die('path [%s] does not exist' %options.train)
+        if os.path.isdir(options.model_path): util.die('path [%s] already exists' %options.model_path)
+        else: os.mkdir(options.model_path)
+    else:
+        if not os.path.isdir(options.model_path): util.die('path [%s] does not exist' %options.model_path)
+
+    ## create a model
+    if options.train:
+        model = build_model(options.train, options)
+
+    if not options.test: sys.exit()
+
+    ## test
+    if not options.train: model = load_model(options)
+    if options.output: options.output = open(options.output, 'w')
+
+    test = get_data(options.test, tokenize=True)
+    test.featurize(model)
+    model.classify(test)
+    test.segment(use_preds=True, tokenize=options.tokenize, output=options.output)
+    
