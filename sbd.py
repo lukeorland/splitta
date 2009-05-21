@@ -45,10 +45,12 @@ def get_features(frag, model):
     (8) w1w2upper: w1 and w2 is capitalized
     """
     words1 = clean(frag.tokenized).split()
-    w1 = words1[-1]
+    if not words1: w1 = ''
+    else: w1 = words1[-1]
     if frag.next:
         words2 = clean(frag.next.tokenized).split()
-        w2 = words2[0]
+        if not words2: w2 = ''
+        else: w2 = words2[0]
     else:
         words2 = []
         w2 = ''
@@ -127,6 +129,74 @@ def get_data(files, expect_labels=True, tokenize=False):
 
                 word_index += 1
         fh.close()
+
+        ## last frag
+        frag = Frag(' '.join(curr_words))
+        if not frag_list: frag_list = frag
+        else: prev.next = frag
+        if expect_labels: frag.label = int('<S>' in word)
+        if tokenize:
+            tokens = word_tokenize.tokenize(frag.orig)
+        else: tokens = frag.orig
+        tokens = re.sub('(<A>)|(<E>)|(<S>)', '', tokens)
+        frag.tokenized = tokens
+        frag_index += 1
+
+    sys.stderr.write(' words [%d] sbd hyps [%d]\n' %(word_index, frag_index))
+
+    ## create a Doc object to hold all this information
+    doc = Doc(frag_list)
+    return doc
+
+def get_text_data(text, expect_labels=True, tokenize=False):
+    """
+    get text, returning an instance of the Doc class
+    doc.frag is the first frag, and each points to the next
+    """
+    
+    frag_list = None
+    word_index = 0
+    frag_index = 0
+    curr_words = []
+    lower_words, non_abbrs = util.Counter(), util.Counter()
+
+    for line in text.splitlines():
+        if (not line.strip()) and (not curr_words) and frag_list:
+            frag.ends_seg = True
+        for word in line.split():
+            curr_words.append(word)
+
+            if is_sbd_hyp(word):
+                frag = Frag(' '.join(curr_words))
+                if not frag_list: frag_list = frag
+                else: prev.next = frag
+                
+                ## get label; tokenize
+                if expect_labels: frag.label = int('<S>' in word)
+                if tokenize:
+                    tokens = word_tokenize.tokenize(frag.orig)
+                else: tokens = frag.orig
+                tokens = re.sub('(<A>)|(<E>)|(<S>)', '', tokens)
+                frag.tokenized = tokens
+                
+                frag_index += 1
+                prev = frag
+                curr_words = []
+                
+            word_index += 1
+
+    ## last frag
+    frag = Frag(' '.join(curr_words))
+    if not frag_list: frag_list = frag
+    else: prev.next = frag
+    if expect_labels: frag.label = int('<S>' in word)
+    if tokenize:
+        tokens = word_tokenize.tokenize(frag.orig)
+    else: tokens = frag.orig
+    tokens = re.sub('(<A>)|(<E>)|(<S>)', '', tokens)
+    frag.tokenized = tokens
+    frag_index += 1
+        
     sys.stderr.write(' words [%d] sbd hyps [%d]\n' %(word_index, frag_index))
 
     ## create a Doc object to hold all this information
@@ -361,9 +431,11 @@ class Doc:
             else: text = frag.orig
             sent.append(text)
             if frag.ends_seg or (use_preds and frag.pred>thresh) or (not use_preds and frag.label>thresh):
-                sent_text = ' '.join(sent) + '\n'
-                if not output: sys.stdout.write(sent_text)
-                else: output.write(sent_text)
+                sent_text = ' '.join(sent)
+                if frag.ends_seg: spacer = '\n\n'
+                else: spacer = '\n'
+                if not output: sys.stdout.write(sent_text + spacer)
+                else: output.write(sent_text + spacer)
                 sent = []
             frag = frag.next
 
@@ -380,10 +452,13 @@ class Doc:
                 w1 = ' '.join(frag.tokenized.split()[-2:])
                 if frag.next: w2 = ' '.join(frag.next.tokenized.split()[:2])
                 else: w2 = '<EOF>'
-                print '[%d] [%1.4f] %s?? %s' %(frag.label, frag.pred, w1, w2)
+                if verbose:
+                    print '[%d] [%1.4f] %s?? %s' %(frag.label, frag.pred, w1, w2)
 
             frag = frag.next
 
+        error = 1 - (1.0 * correct / total)
+        print 'correct [%d] total [%d] error [%1.4f]' %(correct, total, error)
         
 class Frag:
     """
@@ -422,11 +497,26 @@ def build_model(files, options):
     util.save_pickle(model, options.model_path + 'model.pkl')
     return model
 
-def load_model(options):
-    sys.stderr.write('loading model from [%s]... ' %options.model_path)
-    model = util.load_pickle(options.model_path + 'model.pkl')
+def load_sbd_model(model_path = 'model_nb/'):
+    sys.stderr.write('loading model from [%s]... ' %model_path)
+    model = util.load_pickle(model_path + 'model.pkl')
     sys.stderr.write('done!\n')
     return model
+
+def sbd_text(model, text, do_tok=True):
+    """
+    A hook for segmenting text in Python code:
+
+    from sbd import *
+    m = load_sbd_model()
+    sbd_text(m, 'Here is. Some text')
+    """
+
+    data = get_text_data(text, expect_labels=False, tokenize=True)
+    data.featurize(model)
+    model.classify(data)
+    sents = data.segment(use_preds=True, tokenize=do_tok)
+    return sents
 
 
 if __name__ == '__main__':
@@ -437,6 +527,9 @@ if __name__ == '__main__':
     wsj_data = data_root + 'whiskey/satz.1'
     poe_data = data_root + 'whiskey/poe.1'
     new_wsj_data = data_root + 'whiskey/wsj.1'
+
+    ## install root
+    install_root = '/u/dgillick/sbd/splitta/'
 
     ## options
     from optparse import OptionParser
@@ -459,7 +552,7 @@ if __name__ == '__main__':
     ## get test file
     if len(args) > 0:
         options.test = args[0]
-        if not os.path.isfile(options.test): util.die('path [%s] does not exist' %options.test)
+        if not os.path.isfile(options.test): util.die('test path [%s] does not exist' %options.test)
     else:
         options.test = None
         if not options.train: util.die('you did not specify either train or test!')
@@ -467,11 +560,14 @@ if __name__ == '__main__':
     ## create model path
     if not options.model_path.endswith('/'): options.model_path += '/'
     if options.train:
-        if not os.path.isfile(options.train): util.die('path [%s] does not exist' %options.train)
-        if os.path.isdir(options.model_path): util.die('path [%s] already exists' %options.model_path)
+        if not os.path.isfile(options.train): util.die('model path [%s] does not exist' %options.train)
+        if os.path.isdir(options.model_path): util.die('model path [%s] already exists' %options.model_path)
         else: os.mkdir(options.model_path)
     else:
-        if not os.path.isdir(options.model_path): util.die('path [%s] does not exist' %options.model_path)
+        if not os.path.isdir(options.model_path):
+            options.model_path = install_root + options.model_path
+            if not os.path.isdir(options.model_path):
+                util.die('model path [%s] does not exist' %options.model_path)
 
     ## create a model
     if options.train:
@@ -480,11 +576,10 @@ if __name__ == '__main__':
     if not options.test: sys.exit()
 
     ## test
-    if not options.train: model = load_model(options)
+    if not options.train: model = load_sbd_model(options.model_path)
     if options.output: options.output = open(options.output, 'w')
 
     test = get_data(options.test, tokenize=True)
     test.featurize(model)
     model.classify(test)
     test.segment(use_preds=True, tokenize=options.tokenize, output=options.output)
-    

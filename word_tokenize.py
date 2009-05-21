@@ -7,7 +7,13 @@ The resulting string is split on whitespace.
 """
 
 _tokenize_regexps = [
+
+    # uniform quotes
+    (re.compile(r'\'\''), r'"'),
+    (re.compile(r'\`\`'), r'"'),
+
     # Separate punctuation (except period) from words:
+    (re.compile(r'(^|\s)(\')'), r'\1\2 '),
     (re.compile(r'(?=[\(\"\`{\[:;&\#\*@])(.)'), r'\1 '),
     
     (re.compile(r'(.)(?=[?!)\";}\]\*:@\'])'), r'\1 '),
@@ -48,11 +54,8 @@ _tokenize_regexps = [
     # treebank tokenizer special words
     (re.compile(r'([Cc])annot'), r'\1an not'),
 
-    # uniform quotes
     (re.compile(r'\s+'), r' '),
-    (re.compile(r'\' \''), r'"'),
-    (re.compile(r'\` \`'), r'"'),
-
+    
     ]
 
 def tokenize(s):
