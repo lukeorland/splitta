@@ -11,8 +11,8 @@ TODO:
 """
 
 ## globals
-SVM_LEARN = '/u/dgillick/svm_light/svm_learn'
-SVM_CLASSIFY = '/u/dgillick/svm_light/svm_classify'
+SVM_LEARN = '/u/dgillick/tools/svm_light/svm_learn'
+SVM_CLASSIFY = '/u/dgillick/tools/svm_light/svm_classify'
 
 def unannotate(t):
     """

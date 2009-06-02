@@ -25,3 +25,16 @@ python sbd.py -m model_nb -t sample.txt
 
 (now writing output to sample.sent)
 python sbd.py -m model_nb -t sample.txt -o sample.sent
+
+-----
+
+Note about SVM_LIGHT:
+
+The provided SVM model was built with SVM_LIGHT version 6.01. It seems that
+SVM_CLASSIFY requires a matching version or it will crash. So, you can either
+try to use version 6.01, or you can make the following quick fix:
+
+open model_svm/svm_model
+change the first line from:
+SVM-light Version V6.02
+to whatever your version is.
