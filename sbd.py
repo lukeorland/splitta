@@ -105,12 +105,26 @@ def get_data(files, expect_labels=True, tokenize=False):
         sys.stderr.write('reading [%s]\n' %file)
         fh = open(file)
         for line in fh:
-            if (not line.strip()) and (not curr_words) and frag_list:
-                frag.ends_seg = True
+
+            ## deal with blank lines
+            if (not line.strip()) and frag_list:
+                if not curr_words: frag.ends_seg = True
+                else:
+                    frag = Frag(' '.join(curr_words))
+                    frag.ends_seg = True
+                    prev.next = frag
+                    if tokenize:
+                        tokens = word_tokenize.tokenize(frag.orig)
+                    frag.tokenized = tokens
+                    frag_index += 1
+                    prev = frag
+                    curr_words = []
+
             for word in line.split():
                 curr_words.append(word)
 
                 if is_sbd_hyp(word):
+                #if True: # hypothesize all words
                     frag = Frag(' '.join(curr_words))
                     if not frag_list: frag_list = frag
                     else: prev.next = frag
@@ -500,6 +514,7 @@ def build_model(files, options):
 def load_sbd_model(model_path = 'model_nb/'):
     sys.stderr.write('loading model from [%s]... ' %model_path)
     model = util.load_pickle(model_path + 'model.pkl')
+    model.path = model_path
     sys.stderr.write('done!\n')
     return model
 
