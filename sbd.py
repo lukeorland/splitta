@@ -112,6 +112,7 @@ def get_data(files, expect_labels=True, tokenize=False):
                 else:
                     frag = Frag(' '.join(curr_words))
                     frag.ends_seg = True
+                    if expect_labels: frag.label = True
                     prev.next = frag
                     if tokenize:
                         tokens = word_tokenize.tokenize(frag.orig)
@@ -154,6 +155,7 @@ def get_data(files, expect_labels=True, tokenize=False):
         else: tokens = frag.orig
         tokens = re.sub('(<A>)|(<E>)|(<S>)', '', tokens)
         frag.tokenized = tokens
+        frag.ends_seg = True
         frag_index += 1
 
     sys.stderr.write(' words [%d] sbd hyps [%d]\n' %(word_index, frag_index))
@@ -175,8 +177,22 @@ def get_text_data(text, expect_labels=True, tokenize=False):
     lower_words, non_abbrs = util.Counter(), util.Counter()
 
     for line in text.splitlines():
-        if (not line.strip()) and (not curr_words) and frag_list:
-            frag.ends_seg = True
+
+        ## deal with blank lines
+        if (not line.strip()) and frag_list:
+            if not curr_words: frag.ends_seg = True
+            else:
+                frag = Frag(' '.join(curr_words))
+                frag.ends_seg = True
+                if expect_labels: frag.label = True
+                prev.next = frag
+                if tokenize:
+                    tokens = word_tokenize.tokenize(frag.orig)
+                frag.tokenized = tokens
+                frag_index += 1
+                prev = frag
+                curr_words = []
+
         for word in line.split():
             curr_words.append(word)
 
@@ -209,6 +225,7 @@ def get_text_data(text, expect_labels=True, tokenize=False):
     else: tokens = frag.orig
     tokens = re.sub('(<A>)|(<E>)|(<S>)', '', tokens)
     frag.tokenized = tokens
+    frag.ends_seg = True
     frag_index += 1
         
     sys.stderr.write(' words [%d] sbd hyps [%d]\n' %(word_index, frag_index))
@@ -223,16 +240,35 @@ class Model:
     Abstract Model class holds all relevant information, and includes
     train and classify functions
     """
-    def __init__(self, doc, path):
-        self.lower_words, self.non_abbrs = doc.get_stats()
-        self.feats = None
+    def __init__(self, path):
+        self.feats, self.lower_words, self.non_abbrs = {}, {}, {}
         self.path = path
+
+    def prep(self, doc):
+        self.lower_words, self.non_abbrs = doc.get_stats()
 
     def train(self, doc):
         abstract
 
     def classify(self, doc):
         abstract
+
+    def save(self):
+        """
+        save model objects in self.path
+        """
+        util.save_pickle(self.feats, self.path + 'feats')
+        util.save_pickle(self.lower_words, self.path + 'lower_words')
+        util.save_pickle(self.non_abbrs, self.path + 'non_abbrs')
+
+    def load(self):
+        """
+        load model objects from p
+        """
+        self.feats = util.load_pickle(self.path + 'feats')
+        self.lower_words = util.load_pickle(self.path + 'lower_words')
+        self.non_abbrs = util.load_pickle(self.path + 'non_abbrs')
+
         
 class NB_Model(Model):
     """
@@ -265,19 +301,20 @@ class NB_Model(Model):
             for feat in all_feat_names:
                 feats[label][feat] += smooth_inc
                 feats[label][feat] /= totals[label]
+                self.feats[(label, feat)] = feats[label][feat]
             feats[label]['<prior>'] = totals[label] / totals.totalCount()
+            self.feats[(label, '<prior>')] = feats[label]['<prior>']
 
         sys.stderr.write('done!\n')
-        self.feats = feats
 
     def classify_nb_one(self, frag):
         ## the prior is weird, but it works better this way, consistently
-        probs = util.Counter([(label, self.feats[label]['<prior>']**4) for label in self.feats])
+        probs = util.Counter([(label, self.feats[label, '<prior>']**4) for label in [0,1]])
         for label in probs:
             for feat, val in frag.features.items():
-                key = feat + '_' + val
-                if not key in self.feats[label]: continue
-                probs[label] *= self.feats[label][key]
+                key = (label, feat + '_' + val)
+                if not key in self.feats: continue
+                probs[label] *= self.feats[key]
 
         probs = util.normalize(probs)
         return probs[1]
@@ -319,7 +356,7 @@ class SVM_Model(Model):
         lines = []
         frag = doc.frag
         while frag:
-            if frag.label == None: util.die('expecting labeled data')
+            if frag.label == None: util.die('expecting labeled data [%s]' %frag)
             elif frag.label > 0.5: svm_label = '+1'
             elif frag.label < 0.5: svm_label = '-1'
             else: continue
@@ -433,25 +470,30 @@ class Doc:
             frag = frag.next
         sys.stderr.write('done!\n')
 
-    def segment(self, use_preds=False, tokenize=False, output=None):
+    def segment(self, use_preds=False, tokenize=False, output=None, list_only=False):
         """
         output all the text, split according to predictions or labels
         """
+        sents = []
         thresh = 0.5
         sent = []
         frag = self.frag
         while frag:
+            print frag, frag.ends_seg
             if tokenize: text = frag.tokenized
             else: text = frag.orig
             sent.append(text)
             if frag.ends_seg or (use_preds and frag.pred>thresh) or (not use_preds and frag.label>thresh):
+                if not frag.orig: break
                 sent_text = ' '.join(sent)
                 if frag.ends_seg: spacer = '\n\n'
                 else: spacer = '\n'
-                if not output: sys.stdout.write(sent_text + spacer)
-                else: output.write(sent_text + spacer)
+                if output: output.write(sent_text + spacer)
+                elif not list_only: sys.stdout.write(sent_text + spacer)
+                sents.append(sent_text)
                 sent = []
             frag = frag.next
+        return sents
 
     def show_results(self, verbose=False):
 
@@ -498,8 +540,9 @@ def build_model(files, options):
     train_corpus = get_data(files, tokenize=options.tokenize)
 
     ## create a new model
-    if options.svm: model = SVM_Model(train_corpus, options.model_path)
-    else: model = NB_Model(train_corpus, options.model_path)
+    if options.svm: model = SVM_Model(options.model_path)
+    else: model = NB_Model(options.model_path)
+    model.prep(train_corpus)
 
     ## featurize the training corpus
     train_corpus.featurize(model)
@@ -508,13 +551,14 @@ def build_model(files, options):
     model.train(train_corpus)
 
     ## save the model
-    util.save_pickle(model, options.model_path + 'model.pkl')
+    model.save()
     return model
 
-def load_sbd_model(model_path = 'model_nb/'):
+def load_sbd_model(model_path = 'model_nb/', use_svm=False):
     sys.stderr.write('loading model from [%s]... ' %model_path)
-    model = util.load_pickle(model_path + 'model.pkl')
-    model.path = model_path
+    if use_svm: model = SVM_Model(model_path)
+    else: model = NB_Model(model_path)
+    model.load()
     sys.stderr.write('done!\n')
     return model
 
@@ -522,15 +566,15 @@ def sbd_text(model, text, do_tok=True):
     """
     A hook for segmenting text in Python code:
 
-    from sbd import *
-    m = load_sbd_model()
-    sbd_text(m, 'Here is. Some text')
+    import sbd
+    m = sbd.load_sbd_model('/u/dgillick/sbd/splitta/test_nb/', use_svm=False)
+    sents = sbd.sbd_text(m, 'Here is. Some text')
     """
 
     data = get_text_data(text, expect_labels=False, tokenize=True)
     data.featurize(model)
     model.classify(data)
-    sents = data.segment(use_preds=True, tokenize=do_tok)
+    sents = data.segment(use_preds=True, tokenize=do_tok, list_only=True)
     return sents
 
 
@@ -591,7 +635,7 @@ if __name__ == '__main__':
     if not options.test: sys.exit()
 
     ## test
-    if not options.train: model = load_sbd_model(options.model_path)
+    if not options.train: model = load_sbd_model(options.model_path, options.svm)
     if options.output: options.output = open(options.output, 'w')
 
     test = get_data(options.test, tokenize=True)
