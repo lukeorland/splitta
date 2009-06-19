@@ -90,7 +90,7 @@ def is_sbd_hyp(word):
     if re.match('.*\.["\')\]]*$', c): return True
     return False
         
-def get_data(files, expect_labels=True, tokenize=False):
+def get_data(files, expect_labels=True, tokenize=False, verbose=False):
     """
     load text from files, returning an instance of the Doc class
     doc.frag is the first frag, and each points to the next
@@ -160,13 +160,13 @@ def get_data(files, expect_labels=True, tokenize=False):
         frag.ends_seg = True
         frag_index += 1
 
-    sys.stderr.write(' words [%d] sbd hyps [%d]\n' %(word_index, frag_index))
+    if verbose: sys.stderr.write(' words [%d] sbd hyps [%d]\n' %(word_index, frag_index))
 
     ## create a Doc object to hold all this information
     doc = Doc(frag_list)
     return doc
 
-def get_text_data(text, expect_labels=True, tokenize=False):
+def get_text_data(text, expect_labels=True, tokenize=False, verbose=False):
     """
     get text, returning an instance of the Doc class
     doc.frag is the first frag, and each points to the next
@@ -230,7 +230,7 @@ def get_text_data(text, expect_labels=True, tokenize=False):
     frag.ends_seg = True
     frag_index += 1
         
-    sys.stderr.write(' words [%d] sbd hyps [%d]\n' %(word_index, frag_index))
+    if verbose: sys.stderr.write(' words [%d] sbd hyps [%d]\n' %(word_index, frag_index))
 
     ## create a Doc object to hold all this information
     doc = Doc(frag_list)
@@ -247,14 +247,14 @@ class Model:
         self.path = path
 
     def prep(self, doc):
-        self.lower_words, self.non_abbrs = doc.get_stats()
+        self.lower_words, self.non_abbrs = doc.get_stats(verbose=False)
         self.lower_words = dict(self.lower_words)
         self.non_abbrs = dict(self.non_abbrs)
 
     def train(self, doc):
         abstract
 
-    def classify(self, doc):
+    def classify(self, doc, verbose=False):
         abstract
 
     def save(self):
@@ -323,14 +323,14 @@ class NB_Model(Model):
         probs = sbd_util.normalize(probs)
         return probs[1]
 
-    def classify(self, doc):
-        sys.stderr.write('NB classifying... ')
+    def classify(self, doc, verbose=False):
+        if verbose: sys.stderr.write('NB classifying... ')
         frag = doc.frag
         while frag:
             pred = self.classify_nb_one(frag)
             frag.pred = pred
             frag = frag.next
-        sys.stderr.write('done!\n')
+        if verbose: sys.stderr.write('done!\n')
 
 class SVM_Model(Model):
     """
@@ -387,14 +387,14 @@ class SVM_Model(Model):
         ## clean up
         os.remove(train_file)
 
-    def classify(self, doc):
+    def classify(self, doc, verbose=False):
 
         model_file = '%ssvm_model' %self.path
         if not self.feats: sbd_util.die('Incomplete model')
         if not os.path.isfile(model_file): sbd_util.die('no model [%s]' %model_file)
 
         ## testing data file
-        sys.stderr.write('SVM classifying... ')
+        if verbose: sys.stderr.write('SVM classifying... ')
         lines = []
         frag = doc.frag
         while frag:
@@ -432,7 +432,7 @@ class SVM_Model(Model):
         ## clean up
         os.remove(test_file)
         os.remove(pred_file)
-        sys.stderr.write('done!\n')
+        if verbose: sys.stderr.write('done!\n')
         
 class Doc:
     """
@@ -448,8 +448,8 @@ class Doc:
         while curr: s.append(curr)
         return '\n'.join(s)
 
-    def get_stats(self):
-        sys.stderr.write('getting statistics... ')
+    def get_stats(self, verbose):
+        if verbose: sys.stderr.write('getting statistics... ')
         lower_words = sbd_util.Counter()
         non_abbrs = sbd_util.Counter()
         
@@ -461,18 +461,18 @@ class Doc:
                     if not word.endswith('.'): non_abbrs[word] += 1
             frag = frag.next
 
-        sys.stderr.write('lowercased [%d] non-abbrs [%d]\n'
-                         %(len(lower_words), len(non_abbrs)))
+        if verbose: sys.stderr.write('lowercased [%d] non-abbrs [%d]\n'
+                                     %(len(lower_words), len(non_abbrs)))
 
         return lower_words, non_abbrs
 
-    def featurize(self, model):
-        sys.stderr.write('featurizing... ')
+    def featurize(self, model, verbose=False):
+        if verbose: sys.stderr.write('featurizing... ')
         frag = self.frag
         while frag:
             frag.features = get_features(frag, model)
             frag = frag.next
-        sys.stderr.write('done!\n')
+        if verbose: sys.stderr.write('done!\n')
 
     def segment(self, use_preds=False, tokenize=False, output=None, list_only=False):
         """
@@ -548,7 +548,7 @@ def build_model(files, options):
     model.prep(train_corpus)
 
     ## featurize the training corpus
-    train_corpus.featurize(model)
+    train_corpus.featurize(model, verbose=True)
 
     ## run the model's training routine
     model.train(train_corpus)
@@ -575,8 +575,8 @@ def sbd_text(model, text, do_tok=True):
     """
 
     data = get_text_data(text, expect_labels=False, tokenize=True)
-    data.featurize(model)
-    model.classify(data)
+    data.featurize(model, verbose=False)
+    model.classify(data, verbose=False)
     sents = data.segment(use_preds=True, tokenize=do_tok, list_only=True)
     return sents
 
@@ -642,6 +642,6 @@ if __name__ == '__main__':
     if options.output: options.output = open(options.output, 'w')
 
     test = get_data(options.test, tokenize=True)
-    test.featurize(model)
-    model.classify(test)
+    test.featurize(model, verbose=True)
+    model.classify(test, verbose=True)
     test.segment(use_preds=True, tokenize=options.tokenize, output=options.output)
