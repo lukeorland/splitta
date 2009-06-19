@@ -1,5 +1,5 @@
 import re, sys, os, math, tempfile, collections
-import util, word_tokenize
+import sbd_util, word_tokenize
 
 """
 Utilities for disambiguating sentence boundaries
@@ -68,11 +68,13 @@ def get_features(frag, model):
     
     if c1.replace('.','').isalpha():
         feats['w1length'] = str(len1)
-        feats['w1abbr'] = str(int(math.log(1+model.non_abbrs[c1[:-1]])))
+        try: feats['w1abbr'] = str(int(math.log(1+model.non_abbrs[c1[:-1]])))
+        except: feats['w1abbr'] = str(int(math.log(1)))
 
     if c2.replace('.','').isalpha():
         feats['w2cap'] = str(c2[0].isupper())
-        feats['w2lower'] = str(int(math.log(1+model.lower_words[c2.lower()])))
+        try: feats['w2lower'] = str(int(math.log(1+model.lower_words[c2.lower()])))
+        except: feats['w2lower'] = str(int(math.log(1)))        
         feats['w1w2upper'] = c1 + '_' + str(c2[0].isupper())
 
     return feats
@@ -99,7 +101,7 @@ def get_data(files, expect_labels=True, tokenize=False):
     word_index = 0
     frag_index = 0
     curr_words = []
-    lower_words, non_abbrs = util.Counter(), util.Counter()
+    lower_words, non_abbrs = sbd_util.Counter(), sbd_util.Counter()
 
     for file in files:
         sys.stderr.write('reading [%s]\n' %file)
@@ -174,7 +176,7 @@ def get_text_data(text, expect_labels=True, tokenize=False):
     word_index = 0
     frag_index = 0
     curr_words = []
-    lower_words, non_abbrs = util.Counter(), util.Counter()
+    lower_words, non_abbrs = sbd_util.Counter(), sbd_util.Counter()
 
     for line in text.splitlines():
 
@@ -246,6 +248,8 @@ class Model:
 
     def prep(self, doc):
         self.lower_words, self.non_abbrs = doc.get_stats()
+        self.lower_words = dict(self.lower_words)
+        self.non_abbrs = dict(self.non_abbrs)
 
     def train(self, doc):
         abstract
@@ -257,17 +261,17 @@ class Model:
         """
         save model objects in self.path
         """
-        util.save_pickle(self.feats, self.path + 'feats')
-        util.save_pickle(self.lower_words, self.path + 'lower_words')
-        util.save_pickle(self.non_abbrs, self.path + 'non_abbrs')
+        sbd_util.save_pickle(self.feats, self.path + 'feats')
+        sbd_util.save_pickle(self.lower_words, self.path + 'lower_words')
+        sbd_util.save_pickle(self.non_abbrs, self.path + 'non_abbrs')
 
     def load(self):
         """
         load model objects from p
         """
-        self.feats = util.load_pickle(self.path + 'feats')
-        self.lower_words = util.load_pickle(self.path + 'lower_words')
-        self.non_abbrs = util.load_pickle(self.path + 'non_abbrs')
+        self.feats = sbd_util.load_pickle(self.path + 'feats')
+        self.lower_words = sbd_util.load_pickle(self.path + 'lower_words')
+        self.non_abbrs = sbd_util.load_pickle(self.path + 'non_abbrs')
 
         
 class NB_Model(Model):
@@ -282,8 +286,8 @@ class NB_Model(Model):
     def train(self, doc):
 
         sys.stderr.write('training nb... ')
-        feats = collections.defaultdict(util.Counter)
-        totals = util.Counter()
+        feats = collections.defaultdict(sbd_util.Counter)
+        totals = sbd_util.Counter()
 
         frag = doc.frag
         while frag:
@@ -309,14 +313,14 @@ class NB_Model(Model):
 
     def classify_nb_one(self, frag):
         ## the prior is weird, but it works better this way, consistently
-        probs = util.Counter([(label, self.feats[label, '<prior>']**4) for label in [0,1]])
+        probs = sbd_util.Counter([(label, self.feats[label, '<prior>']**4) for label in [0,1]])
         for label in probs:
             for feat, val in frag.features.items():
                 key = (label, feat + '_' + val)
                 if not key in self.feats: continue
                 probs[label] *= self.feats[key]
 
-        probs = util.normalize(probs)
+        probs = sbd_util.normalize(probs)
         return probs[1]
 
     def classify(self, doc):
@@ -356,7 +360,7 @@ class SVM_Model(Model):
         lines = []
         frag = doc.frag
         while frag:
-            if frag.label == None: util.die('expecting labeled data [%s]' %frag)
+            if frag.label == None: sbd_util.die('expecting labeled data [%s]' %frag)
             elif frag.label > 0.5: svm_label = '+1'
             elif frag.label < 0.5: svm_label = '-1'
             else: continue
@@ -386,8 +390,8 @@ class SVM_Model(Model):
     def classify(self, doc):
 
         model_file = '%ssvm_model' %self.path
-        if not self.feats: util.die('Incomplete model')
-        if not os.path.isfile(model_file): util.die('no model [%s]' %model_file)
+        if not self.feats: sbd_util.die('Incomplete model')
+        if not os.path.isfile(model_file): sbd_util.die('no model [%s]' %model_file)
 
         ## testing data file
         sys.stderr.write('SVM classifying... ')
@@ -421,7 +425,7 @@ class SVM_Model(Model):
         preds = map(float, open(pred_file).read().splitlines())
         frag = doc.frag
         while frag:
-            frag.pred = util.logit(preds[total])
+            frag.pred = sbd_util.logit(preds[total])
             frag = frag.next
             total += 1
 
@@ -446,8 +450,8 @@ class Doc:
 
     def get_stats(self):
         sys.stderr.write('getting statistics... ')
-        lower_words = util.Counter()
-        non_abbrs = util.Counter()
+        lower_words = sbd_util.Counter()
+        non_abbrs = sbd_util.Counter()
         
         frag = self.frag
         while frag:
@@ -479,7 +483,6 @@ class Doc:
         sent = []
         frag = self.frag
         while frag:
-            print frag, frag.ends_seg
             if tokenize: text = frag.tokenized
             else: text = frag.orig
             sent.append(text)
@@ -611,22 +614,22 @@ if __name__ == '__main__':
     ## get test file
     if len(args) > 0:
         options.test = args[0]
-        if not os.path.isfile(options.test): util.die('test path [%s] does not exist' %options.test)
+        if not os.path.isfile(options.test): sbd_util.die('test path [%s] does not exist' %options.test)
     else:
         options.test = None
-        if not options.train: util.die('you did not specify either train or test!')
+        if not options.train: sbd_util.die('you did not specify either train or test!')
 
     ## create model path
     if not options.model_path.endswith('/'): options.model_path += '/'
     if options.train:
-        if not os.path.isfile(options.train): util.die('model path [%s] does not exist' %options.train)
-        if os.path.isdir(options.model_path): util.die('model path [%s] already exists' %options.model_path)
+        if not os.path.isfile(options.train): sbd_util.die('model path [%s] does not exist' %options.train)
+        if os.path.isdir(options.model_path): sbd_util.die('model path [%s] already exists' %options.model_path)
         else: os.mkdir(options.model_path)
     else:
         if not os.path.isdir(options.model_path):
             options.model_path = install_root + options.model_path
             if not os.path.isdir(options.model_path):
-                util.die('model path [%s] does not exist' %options.model_path)
+                sbd_util.die('model path [%s] does not exist' %options.model_path)
 
     ## create a model
     if options.train:
