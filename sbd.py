@@ -638,7 +638,9 @@ if __name__ == '__main__':
     if not options.test: sys.exit()
 
     ## test
-    if not options.train: model = load_sbd_model(options.model_path, options.svm)
+    if not options.train:
+        if 'svm' in options.model_path: options.svm = True
+        model = load_sbd_model(options.model_path, options.svm)
     if options.output: options.output = open(options.output, 'w')
 
     test = get_data(options.test, tokenize=True)
