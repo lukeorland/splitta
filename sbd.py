@@ -90,7 +90,7 @@ def is_sbd_hyp(word):
     if re.match('.*\.["\')\]]*$', c): return True
     return False
         
-def get_data(files, expect_labels=True, tokenize=False, verbose=False):
+def get_data(files, expect_labels=True, tokenize=False, verbose=False, files_already_opened=False):
     """
     load text from files, returning an instance of the Doc class
     doc.frag is the first frag, and each points to the next
@@ -105,7 +105,13 @@ def get_data(files, expect_labels=True, tokenize=False, verbose=False):
 
     for file in files:
         sys.stderr.write('reading [%s]\n' %file)
-        fh = open(file)
+
+        #fh = open(file)
+        if files_already_opened:
+            fh = file
+        else:
+            fh = open(file)
+
         for line in fh:
 
             ## deal with blank lines
@@ -145,7 +151,12 @@ def get_data(files, expect_labels=True, tokenize=False, verbose=False):
                     curr_words = []
 
                 word_index += 1
-        fh.close()
+
+        if files_already_opened:
+            pass
+        else:
+            fh.close()
+        #fh.close()
 
         ## last frag
         frag = Frag(' '.join(curr_words))
@@ -409,13 +420,13 @@ class SVM_Model(Model):
             lines.append(line)
             frag = frag.next
 
-        unused, test_file = tempfile.mkstemp()
+        testfd, test_file = tempfile.mkstemp()
         fh = open(test_file, 'w')
         fh.write('\n'.join(lines) + '\n')
         fh.close()
     
         ## classify test data
-        unused, pred_file = tempfile.mkstemp()
+        predfd, pred_file = tempfile.mkstemp()
         options = '-v 0'
         cmd = '%s %s %s %s %s' %(SVM_CLASSIFY, options, test_file, model_file, pred_file)
         os.system(cmd)
@@ -432,6 +443,8 @@ class SVM_Model(Model):
         ## clean up
         os.remove(test_file)
         os.remove(pred_file)
+        os.fdopen(testfd,'w').close()
+        os.fdopen(predfd,'w').close()
         if verbose: sys.stderr.write('done!\n')
         
 class Doc:

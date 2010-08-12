@@ -6,7 +6,8 @@ def save_pickle(data, path):
     o.close()
 
 def load_pickle(path):
-    i = gzip.open(path, 'rb')
+    #i = gzip.open(path, 'rb')
+    i = os.popen('zcat ' + path)
     data = cPickle.load(i)
     i.close()
     return data
