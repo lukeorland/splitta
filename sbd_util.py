@@ -5,9 +5,11 @@ def save_pickle(data, path):
     cPickle.dump(data, o)
     o.close()
 
+ZCAT = 'gzcat' if 'Darwin' in os.popen('uname -a').read().split() else 'zcat'
+
 def load_pickle(path):
     #i = gzip.open(path, 'rb')
-    i = os.popen('zcat ' + path)
+    i = os.popen(ZCAT + ' ' + path)
     data = cPickle.load(i)
     i.close()
     return data
